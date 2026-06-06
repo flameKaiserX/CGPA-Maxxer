@@ -83,8 +83,8 @@ def _create_driver() -> webdriver.Chrome:
             if chromium_version:
                 logger.info("Requesting ChromeDriver matching Chromium %s", chromium_version)
                 driver_path = ChromeDriverManager(
+                    driver_version=chromium_version,
                     chrome_type=ChromeType.CHROMIUM,
-                    version=chromium_version,
                 ).install()
             else:
                 logger.info("Chromium version detection failed; using latest ChromeDriver for Chromium")
