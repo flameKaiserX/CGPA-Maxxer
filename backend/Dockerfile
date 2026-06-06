@@ -7,7 +7,6 @@ ENV PIP_NO_CACHE_DIR=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     chromium \
-    chromium-driver \
     tesseract-ocr \
     libnss3 \
     libx11-xcb1 \
@@ -29,7 +28,6 @@ COPY . /app/backend
 RUN pip install --no-cache-dir -r /app/backend/requirements.txt
 
 ENV PYTHONPATH=/app
-ENV CHROME_DRIVER_PATH=/usr/bin/chromedriver
 ENV TESSERACT_CMD=/usr/bin/tesseract
 
 EXPOSE 8000

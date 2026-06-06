@@ -58,6 +58,7 @@ def _create_driver() -> webdriver.Chrome:
             "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         )
+        options.binary_location = "/usr/bin/chromium"
         if CHROME_DRIVER_PATH:
             logger.info("Using ChromeDriver from CHROME_DRIVER_PATH: %s", CHROME_DRIVER_PATH)
             service = Service(CHROME_DRIVER_PATH)
