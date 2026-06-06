@@ -2,6 +2,8 @@ import io
 import time
 import base64
 import threading
+import subprocess
+import re
 from datetime import datetime, timedelta
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -9,7 +11,7 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
+from webdriver_manager.chrome import ChromeDriverManager, ChromeType
 from PIL import Image, ImageFilter
 from pytesseract import TesseractNotFoundError
 import pytesseract
@@ -41,6 +43,20 @@ _lock = threading.Lock()
 _cleanup_thread_started = False
 
 
+def _get_chromium_version() -> str | None:
+    try:
+        output = subprocess.check_output(
+            ["/usr/bin/chromium", "--version"], stderr=subprocess.STDOUT, text=True
+        ).strip()
+        logger.info("Detected Chromium version: %s", output)
+        match = re.search(r"(\d+\.\d+\.\d+\.\d+)", output)
+        if match:
+            return match.group(1)
+    except Exception as exc:
+        logger.warning("Unable to detect Chromium version: %s", exc)
+    return None
+
+
 # ── Driver factory ────────────────────────────────────────────────────────────
 def _create_driver() -> webdriver.Chrome:
     try:
@@ -63,7 +79,18 @@ def _create_driver() -> webdriver.Chrome:
             logger.info("Using ChromeDriver from CHROME_DRIVER_PATH: %s", CHROME_DRIVER_PATH)
             service = Service(CHROME_DRIVER_PATH)
         else:
-            service = Service(ChromeDriverManager().install())
+            chromium_version = _get_chromium_version()
+            if chromium_version:
+                logger.info("Requesting ChromeDriver matching Chromium %s", chromium_version)
+                driver_path = ChromeDriverManager(
+                    chrome_type=ChromeType.CHROMIUM,
+                    version=chromium_version,
+                ).install()
+            else:
+                logger.info("Chromium version detection failed; using latest ChromeDriver for Chromium")
+                driver_path = ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install()
+            logger.info("Using ChromeDriver binary at %s", driver_path)
+            service = Service(driver_path)
         driver = webdriver.Chrome(service=service, options=options)
         driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         return driver
