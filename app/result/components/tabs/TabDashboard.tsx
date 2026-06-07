@@ -1,7 +1,8 @@
+"use client";
 import { useEffect, useState } from "react";
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, PieChart, Pie, Cell,
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer, PieChart, Pie, Cell,
 } from "recharts";
 import { getCredits, getMaxMarks } from "@/lib/ipu-data";
 import type { ResultData } from "@/lib/types";
@@ -14,39 +15,35 @@ import {
 
 interface Props { data: ResultData; semKeys: string[] }
 
-// Delays rendering children until after first client paint.
-// Prevents Recharts from measuring a 0×0 SSR container.
-function ChartMount({ children }: { children: React.ReactNode }) {
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
-  if (!mounted) return (
-    <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
-      <div style={{ fontFamily: mono, fontSize: "10px", fontWeight: 700, color: MUTED, textTransform: "uppercase", letterSpacing: "0.15em" }}>Loading chart…</div>
-    </div>
-  );
-  return <>{children}</>;
-}
+const ChartSkeleton = ({ height }: { height: number }) => (
+  <div style={{ height, display: "flex", alignItems: "center", justifyContent: "center", background: "#f4f1e8", border: `2px dashed ${INK}` }}>
+    <span style={{ fontFamily: mono, fontSize: "10px", fontWeight: 700, color: MUTED, textTransform: "uppercase", letterSpacing: "0.15em" }}>Loading…</span>
+  </div>
+);
 
 export function TabDashboard({ data, semKeys }: Props) {
-  const allSems        = semKeys.map(k => data.semesters[k]);
-  const allSubjects    = allSems.flatMap(s => s.subjects);
-  const cgpa           = calcSGPA(allSubjects);
-  const division       = getDivision(cgpa);
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
+
+  const allSems = semKeys.map(k => data.semesters[k]);
+  const allSubjects = allSems.flatMap(s => s.subjects);
+  const cgpa = calcSGPA(allSubjects);
+  const division = getDivision(cgpa);
   const gradedSubjects = allSubjects.filter(s => getCredits(s.paper_code, s.subject_name) > 0);
-  const marksArr       = gradedSubjects.map(s => safeInt(s.total_marks));
-  const highest        = marksArr.length ? Math.max(...marksArr) : 0;
-  const lowest         = marksArr.length ? Math.min(...marksArr) : 0;
-  const average        = marksArr.length ? Math.round(marksArr.reduce((a, b) => a + b, 0) / marksArr.length) : 0;
-  const backlog        = marksArr.filter(m => m < 40).length;
-  const totalCredits   = allSubjects.reduce((sum, s) => sum + getCredits(s.paper_code, s.subject_name), 0);
+  const marksArr = gradedSubjects.map(s => safeInt(s.total_marks));
+  const highest = marksArr.length ? Math.max(...marksArr) : 0;
+  const lowest = marksArr.length ? Math.min(...marksArr) : 0;
+  const average = marksArr.length ? Math.round(marksArr.reduce((a, b) => a + b, 0) / marksArr.length) : 0;
+  const backlog = marksArr.filter(m => m < 40).length;
+  const totalCredits = allSubjects.reduce((sum, s) => sum + getCredits(s.paper_code, s.subject_name), 0);
 
   const journeyData = semKeys.map(key => {
     const sem = data.semesters[key];
     return {
-      semester:  `S${sem.label}`,
-      sgpa:      calcSGPA(sem.subjects),
+      semester: `S${sem.label}`,
+      sgpa: calcSGPA(sem.subjects),
       fullLabel: `Semester ${sem.label}`,
-      sortNum:   parseInt(key.replace(/\D/g, "")) || 0,
+      sortNum: parseInt(key.replace(/\D/g, "")) || 0,
     };
   }).sort((a, b) => a.sortNum - b.sortNum);
 
@@ -73,14 +70,14 @@ export function TabDashboard({ data, semKeys }: Props) {
   };
 
   const stats = [
-    { label: "CGPA",      value: cgpa,                  bg: RED,    fg: WHITE },
-    { label: "Credits",   value: totalCredits,           bg: YELLOW, fg: INK  },
-    { label: "Semesters", value: semKeys.length,         bg: BLUE,   fg: WHITE },
-    { label: "Subjects",  value: gradedSubjects.length,  bg: LIME,   fg: INK  },
-    { label: "Average",   value: average,                bg: PINK,   fg: INK  },
-    { label: "Highest",   value: highest,                bg: LIME,   fg: INK  },
-    { label: "Lowest",    value: lowest,                 bg: lowest < 40 ? RED : YELLOW, fg: INK },
-    { label: "Backlog",   value: backlog,                bg: backlog > 0 ? RED : LIME,   fg: backlog > 0 ? WHITE : INK },
+    { label: "CGPA", value: cgpa, bg: RED, fg: WHITE },
+    { label: "Credits", value: totalCredits, bg: YELLOW, fg: INK },
+    { label: "Semesters", value: semKeys.length, bg: BLUE, fg: WHITE },
+    { label: "Subjects", value: gradedSubjects.length, bg: LIME, fg: INK },
+    { label: "Average", value: average, bg: PINK, fg: INK },
+    { label: "Highest", value: highest, bg: LIME, fg: INK },
+    { label: "Lowest", value: lowest, bg: lowest < 40 ? RED : YELLOW, fg: INK },
+    { label: "Backlog", value: backlog, bg: backlog > 0 ? RED : LIME, fg: backlog > 0 ? WHITE : INK },
   ];
 
   return (
@@ -102,9 +99,9 @@ export function TabDashboard({ data, semKeys }: Props) {
         <div style={{ background: WHITE, border: `4px solid ${INK}`, boxShadow: SHADOW_LG, padding: 20 }}>
           <div style={{ fontFamily: mono, fontSize: "11px", fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.15em", marginBottom: 4 }}>GPA Journey</div>
           <div style={{ fontSize: "12px", color: MUTED, marginBottom: 16 }}>Semester-wise SGPA</div>
-          <div style={{ height: 220, minHeight: 220 }}>
-            <ChartMount>
-              <ResponsiveContainer width="100%" height="100%">
+          <div style={{ height: 220, minWidth: 0 }}>
+            {!mounted ? <ChartSkeleton height={220} /> : (
+              <ResponsiveContainer width="100%" height={220}>
                 <LineChart data={journeyData} margin={{ top: 10, right: 20, bottom: 10, left: 0 }}>
                   <CartesianGrid stroke={INK} strokeDasharray="3 3" strokeWidth={1} />
                   <XAxis dataKey="semester" stroke={INK} tick={{ fontFamily: mono, fontSize: 10, fontWeight: 700 }} tickLine={{ stroke: INK, strokeWidth: 2 }} axisLine={{ stroke: INK, strokeWidth: 2 }} />
@@ -113,7 +110,7 @@ export function TabDashboard({ data, semKeys }: Props) {
                   <Line type="monotone" dataKey="sgpa" stroke={RED} strokeWidth={3} dot={{ fill: WHITE, stroke: RED, strokeWidth: 3, r: 5 }} activeDot={{ r: 7, fill: RED }} />
                 </LineChart>
               </ResponsiveContainer>
-            </ChartMount>
+            )}
           </div>
         </div>
 
@@ -122,16 +119,14 @@ export function TabDashboard({ data, semKeys }: Props) {
           <div style={{ fontFamily: mono, fontSize: "11px", fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.15em", marginBottom: 16 }}>Grade Spectrum</div>
           <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
             <div style={{ flex: "0 0 180px", position: "relative" }}>
-              <ChartMount>
-                <ResponsiveContainer width="100%" height={180}>
-                  <PieChart>
-                    <Pie data={gradeData} cx="50%" cy="50%" innerRadius={45} outerRadius={72} paddingAngle={2} dataKey="value" stroke={INK} strokeWidth={2}>
-                      {gradeData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
-                    </Pie>
-                    <Tooltip />
-                  </PieChart>
-                </ResponsiveContainer>
-              </ChartMount>
+              {!mounted ? <ChartSkeleton height={180} /> : (
+                <PieChart width={180} height={180}>
+                  <Pie data={gradeData} cx="50%" cy="50%" innerRadius={45} outerRadius={72} paddingAngle={2} dataKey="value" stroke={INK} strokeWidth={2}>
+                    {gradeData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
+                  </Pie>
+                  <Tooltip />
+                </PieChart>
+              )}
               <div style={{ textAlign: "center", fontFamily: mono, fontSize: "12px", fontWeight: 800, position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%)", pointerEvents: "none" }}>
                 <div style={{ fontSize: 22 }}>{gradedSubjects.length}</div>
                 <div style={{ fontSize: 9, color: MUTED, textTransform: "uppercase" }}>Subjects</div>

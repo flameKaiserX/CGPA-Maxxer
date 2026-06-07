@@ -655,11 +655,8 @@ def change_password(session_id: str, current_password: str, new_password: str) -
     if not session or session.get("status") != "logged_in":
         return {"error": "Session not found or expired."}
 
-    profile_url = f"{EXAMWEB_BASE_URL}/web/student/changepassword.jsp"
-    try:
-        response = _get_page(session, profile_url)
-    except Exception:
-        response = _get_page(session, f"{EXAMWEB_BASE_URL}/web/student/ChangePassword.jsp")
+    profile_url = f"{EXAMWEB_BASE_URL}/web/changepasswd.jsp"
+    response = _get_page(session, profile_url)
 
     soup = BeautifulSoup(response.text, "html.parser")
     form = _find_login_form(response.text, profile_url)
