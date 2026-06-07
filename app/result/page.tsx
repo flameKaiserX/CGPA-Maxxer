@@ -8,6 +8,12 @@ import { ResultsDashboard} from "./components/ResultDashboard";
 const API = process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, "") ?? "";
 const HEALTH_ENDPOINT = API ? `${API}/health` : "/health";
 
+async function parseApiResponse(res: Response) {
+  const data = await res.json().catch(() => ({}));
+  const error = data.error ?? data.detail ?? null;
+  return { ok: res.ok, data, error };
+}
+
 export default function ResultsPage() {
   const [pageState,      setPageState]     = useState<PageState>("form");
   const [backendDown,    setBackendDown]   = useState(false);
@@ -37,9 +43,13 @@ export default function ResultsPage() {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ session_id: sid }),
       });
-      const data = await res.json();
-      if (data.error) { setError(data.error); setPageState("form"); }
-      else            { setResult(data); setPageState("done"); }
+      const { ok, data, error } = await parseApiResponse(res);
+      if (!ok) {
+        setError(error ?? "Failed to fetch results.");
+        setPageState("form");
+        return;
+      }
+      setResult(data); setPageState("done");
     } catch {
       setError("Failed to fetch results."); setPageState("form");
     }
@@ -52,8 +62,12 @@ export default function ResultsPage() {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enrollment: e, password: p }),
       });
-      const data = await res.json();
-      if (data.error) { setError(data.error); setPageState("form"); return; }
+      const { ok, data, error } = await parseApiResponse(res);
+      if (!ok) {
+        setError(error ?? "Could not start session.");
+        setPageState("form");
+        return;
+      }
       if (data.status === "logged_in") {
         await fetchResults(data.session_id);
       } else if (data.status === "captcha_required") {
@@ -63,10 +77,12 @@ export default function ResultsPage() {
         else setCaptchaError("CAPTCHA image missing. Click refresh ↻");
         setPageState("form");
       } else {
-        setError("Auto CAPTCHA failed."); setCaptchaMode("manual"); setPageState("form");
+        setError(error ?? "Auto CAPTCHA failed.");
+        setCaptchaMode("manual"); setPageState("form");
       }
-    } catch { setError("Could not connect to server."); setPageState("form"); }
-    finally  { setLoadingAuto(false); }
+    } catch {
+      setError("Could not connect to server."); setPageState("form");
+    } finally { setLoadingAuto(false); }
   };
 
   const handleManualOpen = async (e: string, p: string) => {
@@ -78,8 +94,8 @@ export default function ResultsPage() {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ session_id: sessionId }),
         });
-        const data = await res.json();
-        if (data.error) { setCaptchaError(data.error); return; }
+        const { ok, data, error } = await parseApiResponse(res);
+        if (!ok) { setCaptchaError(error ?? "Failed to load CAPTCHA."); return; }
         if (data.captcha_image) setCaptchaImage(data.captcha_image);
       } catch { setCaptchaError("Failed to load CAPTCHA."); }
       finally  { setLoadingCaptcha(false); }
@@ -91,8 +107,8 @@ export default function ResultsPage() {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enrollment: e, password: p }),
       });
-      const data = await res.json();
-      if (data.error) { setCaptchaError(data.error); return; }
+      const { ok, data, error } = await parseApiResponse(res);
+      if (!ok) { setCaptchaError(error ?? "Failed to load CAPTCHA."); return; }
       setSessionId(data.session_id);
       if (data.captcha_image) { setCaptchaImage(data.captcha_image); return; }
       setCaptchaError("No CAPTCHA image received. Try the refresh button.");
@@ -108,13 +124,19 @@ export default function ResultsPage() {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ session_id: sessionId, enrollment: e, password: p, captcha: c }),
       });
-      const data = await res.json();
-      if (data.status === "logged_in") { await fetchResults(sessionId); }
-      else {
-        setError("❌ Wrong CAPTCHA, please try again");
-        if (data.captcha_image) setCaptchaImage(data.captcha_image);
-        setPageState("form");
+      const { ok, data, error } = await parseApiResponse(res);
+      if (ok && data.status === "logged_in") {
+        await fetchResults(sessionId);
+        return;
       }
+      setError(error ?? "❌ Wrong CAPTCHA or credentials. Please try again.");
+      if (data.captcha_image) {
+        setCaptchaImage(data.captcha_image);
+      } else {
+        setCaptchaImage(null);
+        await handleManualRefresh();
+      }
+      setPageState("form");
     } catch { setError("Could not connect to server."); setPageState("form"); }
     finally  { setLoadingAuto(false); }
   };
@@ -131,8 +153,8 @@ export default function ResultsPage() {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ session_id: sessionId }),
       });
-      const data = await res.json();
-      if (data.error) setCaptchaError(data.error);
+      const { ok, data, error } = await parseApiResponse(res);
+      if (!ok) { setCaptchaError(error ?? "Failed to refresh."); }
       else if (data.captcha_image) setCaptchaImage(data.captcha_image);
     } catch { setCaptchaError("Failed to refresh."); }
     finally  { setLoadingCaptcha(false); }

@@ -19,7 +19,7 @@ def _parse_list(value: str | None, separator: str = ",") -> list[str]:
 
 
 ALLOWED_ORIGINS = _parse_list(os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000"))
-EXAMWEB_BASE_URL = os.environ.get("EXAMWEB_BASE_URL", "http://examweb.ggsipu.ac.in").rstrip("/")
+EXAMWEB_BASE_URL = os.environ.get("EXAMWEB_BASE_URL", "https://examweb.ggsipu.ac.in").rstrip("/")
 LOGIN_URL = f"{EXAMWEB_BASE_URL}/web/login.jsp"
 SESSION_TTL_MINUTES = int(os.environ.get("SESSION_TTL_MINUTES", "10"))
 MAX_AUTO_RETRIES = int(os.environ.get("MAX_AUTO_RETRIES", "1"))

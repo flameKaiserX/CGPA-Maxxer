@@ -1,201 +1,304 @@
-import re
-import time
+import base64
+import json
 import logging
-from selenium import webdriver
-from selenium.webdriver.support.ui import Select
+import re
+from urllib.parse import urljoin
+
+import httpx
 from bs4 import BeautifulSoup
+
+from backend.config import EXAMWEB_BASE_URL
 
 logger = logging.getLogger("backend.result_scraper")
 
+# ── Confirmed endpoints (verified via DevTools) ───────────────────────────────
+_RESULT_SERVLET  = "/web/StudentSearchProcess"
+_PROFILE_URL     = "/web/student/profile.jsp"
+_HOME_URL        = "/web/student/studenthome.jsp"
 
-# ── Parse result table ────────────────────────────────────────────────────────
-def _parse_result_table(soup: BeautifulSoup) -> list[dict]:
-    subjects = []
-    for table in soup.find_all("table", class_="modern-table"):
-        tbody = table.find("tbody")
-        if not tbody:
+# flag=2 + searchMode=2 is what stdata.js sends — always try this first.
+# Fallbacks cover portal upgrades or config changes.
+_PRIMARY_FLAG    = "2"
+_FALLBACK_FLAGS  = ["getInternalMarks", "getResult", "internalMarks",
+                    "result", "semResult", "getSemResult", "getMarks",
+                    "studentResult", "1", "3"]
+
+_AJAX_HEADERS = {
+    "X-Requested-With": "XMLHttpRequest",
+    "Accept": "application/json, text/html, */*; q=0.01",
+}
+
+
+# ── Low-level helpers ─────────────────────────────────────────────────────────
+
+def _resolve_url(base: str, path: str) -> str:
+    return urljoin(base, path) if path else base
+
+
+def _get(session: dict, path: str, params: dict | None = None) -> httpx.Response | None:
+    url = f"{EXAMWEB_BASE_URL}{path}"
+    headers = {"Referer": session.get("last_url", url), **_AJAX_HEADERS}
+    try:
+        resp = session["client"].get(url, params=params or {}, headers=headers)
+        if resp.status_code == 200 and resp.text.strip():
+            logger.debug("GET %s %s → 200 (%d bytes)", path, params or "", len(resp.text))
+            return resp
+        logger.debug("GET %s %s → %d", path, params or "", resp.status_code)
+    except Exception as exc:
+        logger.warning("GET %s failed: %s", path, exc)
+    return None
+
+
+def _extract_float(text: str, pattern: str) -> float | None:
+    m = re.search(pattern, text, re.I)
+    return float(m.group(1)) if m else None
+
+
+# ── Form parsing (for home page semester select) ──────────────────────────────
+
+def _find_result_select(form: BeautifulSoup) -> BeautifulSoup | None:
+    for s in form.find_all("select"):
+        attrs = " ".join(filter(None, [s.get("id", ""), s.get("name", "")])).lower()
+        if re.search(r"\b(euno|semester|sem|exam|result|term|batch)\b", attrs):
+            return s
+    selects = form.find_all("select")
+    return selects[0] if len(selects) == 1 else None
+
+
+def _extract_options(soup: BeautifulSoup) -> tuple[list[tuple[str, str]], str]:
+    """Returns (options, searchMode) from the home page form."""
+    for form in soup.find_all("form"):
+        sel = _find_result_select(form)
+        if not sel:
             continue
-        for row in tbody.find_all("tr"):
-            cols = [td.get_text(strip=True) for td in row.find_all("td")]
-            if len(cols) < 6:
-                continue
-            subjects.append({
-                "semester":       cols[0],
-                "paper_code":     cols[1],
-                "subject_name":   cols[2],
-                "internal_marks": cols[3],
-                "external_marks": cols[4],
-                "total_marks":    cols[5],
-                "exam_date":      cols[6] if len(cols) > 6 else None,
-            })
+        options = [
+            (opt.get("value", "").strip(), opt.get_text(strip=True))
+            for opt in sel.find_all("option")
+            if opt.get("value", "").strip()
+        ]
+        if options:
+            sm_inp = form.find("input", {"name": "searchMode"})
+            searchmode = sm_inp.get("value", "") if sm_inp else ""
+            return options, searchmode
+    return [], ""
+
+
+# ── Result JSON parsing ───────────────────────────────────────────────────────
+
+def _parse_stresult(text: str) -> list[dict]:
+    """
+    Parse the confirmed GGSIPU JSON format:
+    {"stresult": [[sem, code, name, int, ext, total, status, examDate, declaredDate], ...],
+     "header":   [...],
+     "stprofile": {...}}
+    """
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+
+    if not isinstance(data, dict):
+        return []
+
+    rows = data.get("stresult", [])
+    if not rows or not isinstance(rows, list):
+        return []
+
+    subjects = []
+    for row in rows:
+        if not isinstance(row, (list, tuple)) or len(row) < 3:
+            continue
+        get = lambda i: str(row[i]).strip() if i < len(row) else ""
+        subjects.append({
+            "semester":       get(0),
+            "paper_code":     get(1),
+            "subject_name":   get(2),
+            "internal_marks": get(3),
+            "external_marks": get(4),
+            "total_marks":    get(5),
+            # index 6 = status code, index 7 = exam month/year
+            "exam_date":      get(7) or None,
+        })
     return subjects
 
 
-# ── Scrape all semesters ──────────────────────────────────────────────────────
-def scrape_results(driver: webdriver.Chrome) -> dict:
-    from selenium.webdriver.common.by import By
-    from selenium.webdriver.support.ui import WebDriverWait
-    from selenium.webdriver.support import expected_conditions as EC
+def _extract_stprofile(data: dict) -> dict:
+    """Pull profile fields from the stprofile block in the result JSON."""
+    sp = data.get("stprofile", {})
+    if not sp:
+        return {}
+    profile = {}
+    mapping = {
+        "enrollment": ["nrollno"],
+        "name":       ["stname"],
+        "batch":      ["byoa", "yoa"],
+        "programme":  ["prgname"],
+        "institute":  ["iname"],
+    }
+    for field, keys in mapping.items():
+        for k in keys:
+            if sp.get(k):
+                profile[field] = str(sp[k]).strip()
+                break
+    return profile
 
-    wait = WebDriverWait(driver, 10)
-    wait.until(EC.presence_of_element_located((By.ID, "euno")))
 
-    dropdown = Select(driver.find_element(By.ID, "euno"))
-    options = [
-        (opt.get_attribute("value"), opt.text.strip())
-        for opt in dropdown.options
-        if opt.get_attribute("value")
-    ]
-    logger.info("Found %d semester(s): %s", len(options), [o[1] for o in options])
+# ── Profile JSON parsing (profile.jsp embeds full JSON as page text) ──────────
 
-    all_semesters = {}
+def _parse_profile_page(text: str, primary: dict) -> dict:
+    """
+    profile.jsp injects the student record as a raw JSON array string in the page body:
+    [{"nrollno":"...","stname":"...","gender":"F","email":"...","mobno":"...",
+      "father":"...","mother":"...","stimage":"<b64jpeg>","prgname":"...",...}]
+    Scan lines for this pattern and parse it directly.
+    """
+    profile: dict = dict(primary)
+
+    soup = BeautifulSoup(text, "html.parser")
+    page_text = soup.get_text("\n", strip=True)
+
+    for line in page_text.splitlines():
+        line = line.strip()
+        if not (line.startswith("[{") and ("\"nrollno\"" in line or "\"stname\"" in line)):
+            continue
+        try:
+            data = json.loads(line)
+            if not (isinstance(data, list) and data):
+                continue
+            sp = data[0]
+            field_map = {
+                "enrollment":  ["nrollno"],
+                "name":        ["stname"],
+                "gender":      ["gender"],
+                "email":       ["email"],
+                "mobile":      ["mobno", "mobile"],
+                "father_name": ["father", "fathername"],
+                "mother_name": ["mother", "mothername"],
+                "batch":       ["byoa", "yoa", "batch"],
+                "programme":   ["prgname", "programme"],
+                "institute":   ["iname", "institute"],
+            }
+            for field, keys in field_map.items():
+                if field not in profile:
+                    for k in keys:
+                        if sp.get(k):
+                            profile[field] = str(sp[k]).strip()
+                            break
+
+            if "photo" not in profile and sp.get("stimage"):
+                profile["photo"] = sp["stimage"].replace("\\n", "").replace("\n", "")
+
+            logger.info("Profile parsed from embedded JSON: %s", list(profile.keys()))
+            return profile
+
+        except (json.JSONDecodeError, KeyError, IndexError) as exc:
+            logger.warning("Profile embedded JSON parse error: %s", exc)
+
+    # Fallback: use whatever primary already has
+    logger.warning("Could not find embedded JSON in profile.jsp — returning primary only")
+    return profile
+
+
+# ── Public API ────────────────────────────────────────────────────────────────
+
+def scrape_results(session: dict) -> dict:
+    if not session or "client" not in session:
+        return {"error": "Invalid session"}
+
+    # ── Step 1: fetch home page to get semester options ───────────────────────
+    home_resp = session["client"].get(f"{EXAMWEB_BASE_URL}{_HOME_URL}")
+    home_resp.raise_for_status()
+    session["last_url"] = str(home_resp.url)
+
+    soup = BeautifulSoup(home_resp.text, "html.parser")
+    options, searchmode = _extract_options(soup)
+    if not options:
+        return {"error": "No semester options found on home page"}
+
+    logger.info("Semesters: %s  searchMode=%r", [l for _, l in options], searchmode)
+
+    # ── Step 2: fetch each semester via StudentSearchProcess ──────────────────
+    all_semesters: dict = {}
+    inline_profile: dict = {}
+
+    # Use the confirmed flag first; only iterate fallbacks if that fails
+    primary_flag = searchmode if searchmode else _PRIMARY_FLAG
 
     for value, label in options:
-        logger.info("Fetching semester %s", label)
-        Select(driver.find_element(By.ID, "euno")).select_by_value(value)
-        time.sleep(1)
-        driver.find_element(By.CSS_SELECTOR, "input[value='Get Result']").click()
-        time.sleep(2)
+        logger.info("Fetching semester %r …", label)
 
-        soup     = BeautifulSoup(driver.page_source, "html.parser")
-        subjects = _parse_result_table(soup)
+        resp = _get(session, _RESULT_SERVLET, {"flag": primary_flag, "euno": value})
 
+        # If primary flag fails, try fallbacks (portal change / config drift)
+        if resp is None:
+            logger.info("Primary flag %r failed — trying fallbacks", primary_flag)
+            for flag in _FALLBACK_FLAGS:
+                if flag == primary_flag:
+                    continue
+                resp = _get(session, _RESULT_SERVLET, {"flag": flag, "euno": value})
+                if resp is not None:
+                    logger.info("Fallback flag %r worked for semester %r", flag, label)
+                    break
+
+        if resp is None:
+            logger.warning("All flags failed for semester %r", label)
+            continue
+
+        session["last_url"] = str(resp.url)
+
+        # Parse subjects
+        subjects = _parse_stresult(resp.text)
         if subjects:
-            page_text  = soup.get_text()
-            sgpa_match = re.search(r'sgpa[:\s]+([0-9.]+)', page_text, re.I)
-            cgpa_match = re.search(r'cgpa[:\s]+([0-9.]+)', page_text, re.I)
+            logger.info("Semester %r: %d subjects parsed", label, len(subjects))
+        else:
+            logger.warning("Semester %r: no subjects in response (len=%d)", label, len(resp.text))
 
-            all_semesters[f"sem_{label}"] = {
-                "label":    label,
-                "subjects": subjects,
-                "sgpa":     float(sgpa_match.group(1)) if sgpa_match else None,
-                "cgpa":     float(cgpa_match.group(1)) if cgpa_match else None,
-            }
+        # Extract profile stub from stprofile block (free, same response)
+        if not inline_profile:
+            try:
+                jdata = json.loads(resp.text)
+                inline_profile = _extract_stprofile(jdata)
+                sgpa = _extract_float(str(jdata), r"sgpa[:\s\"]+([0-9.]+)")
+                cgpa = _extract_float(str(jdata), r"cgpa[:\s\"]+([0-9.]+)")
+            except Exception:
+                sgpa = cgpa = None
+        else:
+            try:
+                jdata = json.loads(resp.text)
+                sgpa = _extract_float(str(jdata), r"sgpa[:\s\"]+([0-9.]+)")
+                cgpa = _extract_float(str(jdata), r"cgpa[:\s\"]+([0-9.]+)")
+            except Exception:
+                sgpa = cgpa = None
 
-    # Extract student name from last loaded page
-    soup = BeautifulSoup(driver.page_source, "html.parser")
-    name_el = soup.find(string=re.compile(r"Name", re.I))
-    name = name_el.find_next().get_text(strip=True) if name_el else None
+        all_semesters[f"sem_{label}"] = {
+            "label":    label,
+            "subjects": subjects,
+            "sgpa":     sgpa,
+            "cgpa":     cgpa,
+        }
 
-    logger.info("Scraping student profile")
-    profile = scrape_profile(driver)
+    # ── Step 3: fetch full profile (email, mobile, mother, photo) ────────────
+    profile = scrape_profile(session, primary=inline_profile)
 
     return {
-        "name":       name or profile.get("name"),
+        "name":       profile.get("name"),
         "enrollment": profile.get("enrollment"),
         "profile":    profile,
         "semesters":  all_semesters,
     }
 
-# ── Scrape student profile ────────────────────────────────────────────────────
-def scrape_profile(driver: webdriver.Chrome) -> dict:
-    from selenium.webdriver.common.by import By
-    from selenium.webdriver.support.ui import WebDriverWait
-    from selenium.webdriver.support import expected_conditions as EC
-    import base64, requests
 
-    PROFILE_URLS = [
-        "/web/student/profile.jsp",
-    ]
+def scrape_profile(session: dict, primary: dict | None = None) -> dict:
+    if not session or "client" not in session:
+        return primary or {}
 
-    base_url = driver.current_url.split("/web/")[0]
-    profile_soup = None
+    try:
+        resp = session["client"].get(f"{EXAMWEB_BASE_URL}{_PROFILE_URL}")
+        resp.raise_for_status()
+        session["last_url"] = str(resp.url)
+        session["last_html"] = resp.text
+    except Exception as exc:
+        logger.warning("Could not fetch profile page: %s", exc)
+        return primary or {}
 
-    for path in PROFILE_URLS:
-        try:
-            url = base_url + path
-            logger.info("Trying profile URL: %s", url)
-            driver.get(url)
-            WebDriverWait(driver, 6).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-            soup = BeautifulSoup(driver.page_source, "html.parser")
-            page_text = soup.get_text().lower()
-            if any(kw in page_text for kw in ["father", "date of birth", "programme", "enrollment", "branch"]):
-                logger.info("Found profile page at: %s", url)
-                profile_soup = soup
-                break
-            else:
-                logger.warning("Page exists but doesn't look like profile, trying next: %s", url)
-        except Exception as e:
-                logger.warning("Profile URL failed: %s, error: %s", path, e)
-
-    if not profile_soup:
-        logger.warning("Could not find profile page")
-        return {}
-
-    profile = {}
-
-    field_map = {
-        "name":           ["student name", "name"],
-        "father_name":    ["father", "father's name", "father name"],
-        "mother_name":    ["mother", "mother's name", "mother name"],
-        "enrollment":     ["enrollment no", "enrollment number", "enrolment no"],
-        "programme":      ["programme", "program", "course"],
-        "institute":      ["institute name", "institute", "college"],
-        "batch":          ["batch", "admission year", "year of admission"],
-        "email":          ["email", "e-mail", "email id"],
-        "mobile":         ["mobile", "phone", "contact no", "mobile no"],
-        "gender":         ["gender", "sex"],
-    }
-
-    for row in profile_soup.find_all("tr"):
-        cols = row.find_all(["td", "th"])
-        if len(cols) < 2:
-            continue
-        label = cols[0].get_text(strip=True).lower().rstrip(":")
-        value = cols[1].get_text(strip=True)
-        if not value or value in ("-", "N/A", "NA", ""):
-            continue
-        for field, keywords in field_map.items():
-            if field not in profile and any(kw in label for kw in keywords):
-                profile[field] = value
-                break
-
-    for el in profile_soup.find_all(["dt", "label", "strong", "b"]):
-        label = el.get_text(strip=True).lower().rstrip(":")
-        sibling = el.find_next_sibling()
-        if not sibling:
-            sibling = el.parent.find_next_sibling()
-        if not sibling:
-            continue
-        value = sibling.get_text(strip=True)
-        if not value or value in ("-", "N/A", "NA", ""):
-            continue
-        for field, keywords in field_map.items():
-            if field not in profile and any(kw in label for kw in keywords):
-                profile[field] = value
-                break
-
-    # ── Photo ─────────────────────────────────────────────────────────────────
-    photo_b64 = None
-    for img in profile_soup.find_all("img"):
-        src = img.get("src", "")
-
-        # Case 1: already a base64 data URI embedded in the HTML
-        if src.startswith("data:image"):
-            # Extract the base64 part after the comma
-            try:
-                photo_b64 = src.split(",", 1)[1]
-                logger.info("Photo is inline base64 (%d chars)", len(photo_b64))
-                break
-            except IndexError:
-                continue
-
-        # Case 2: URL pointing to a photo resource
-        if any(kw in src.lower() for kw in ["photo", "image", "student", "pic", ".jpg", ".jpeg", ".png"]):
-            try:
-                photo_url = src if src.startswith("http") else base_url + ("" if src.startswith("/") else "/") + src
-                logger.info("Fetching photo from URL: %s", photo_url)
-                cookies = {c["name"]: c["value"] for c in driver.get_cookies()}
-                resp = requests.get(photo_url, cookies=cookies, timeout=8)
-                if resp.status_code == 200 and "image" in resp.headers.get("content-type", ""):
-                    photo_b64 = base64.b64encode(resp.content).decode("utf-8")
-                    logger.info("Photo fetched (%d bytes)", len(resp.content))
-                    break
-            except Exception as e:
-                logger.warning("Photo fetch failed: %s", e)
-
-    if photo_b64:
-        profile["photo"] = photo_b64
-
-    logger.info("Profile fields scraped: %s", list(profile.keys()))
-    return profile
+    return _parse_profile_page(resp.text, primary or {})

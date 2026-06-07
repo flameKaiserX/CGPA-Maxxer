@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, PieChart, Pie, Cell,
@@ -12,6 +13,19 @@ import {
 } from "@/app/result/tokens";
 
 interface Props { data: ResultData; semKeys: string[] }
+
+// Delays rendering children until after first client paint.
+// Prevents Recharts from measuring a 0×0 SSR container.
+function ChartMount({ children }: { children: React.ReactNode }) {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  if (!mounted) return (
+    <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div style={{ fontFamily: mono, fontSize: "10px", fontWeight: 700, color: MUTED, textTransform: "uppercase", letterSpacing: "0.15em" }}>Loading chart…</div>
+    </div>
+  );
+  return <>{children}</>;
+}
 
 export function TabDashboard({ data, semKeys }: Props) {
   const allSems        = semKeys.map(k => data.semesters[k]);
@@ -29,10 +43,10 @@ export function TabDashboard({ data, semKeys }: Props) {
   const journeyData = semKeys.map(key => {
     const sem = data.semesters[key];
     return {
-      semester: `S${sem.label}`,
-      sgpa: calcSGPA(sem.subjects),
+      semester:  `S${sem.label}`,
+      sgpa:      calcSGPA(sem.subjects),
       fullLabel: `Semester ${sem.label}`,
-      sortNum: parseInt(key.replace(/\D/g, "")) || 0,
+      sortNum:   parseInt(key.replace(/\D/g, "")) || 0,
     };
   }).sort((a, b) => a.sortNum - b.sortNum);
 
@@ -66,7 +80,7 @@ export function TabDashboard({ data, semKeys }: Props) {
     { label: "Average",   value: average,                bg: PINK,   fg: INK  },
     { label: "Highest",   value: highest,                bg: LIME,   fg: INK  },
     { label: "Lowest",    value: lowest,                 bg: lowest < 40 ? RED : YELLOW, fg: INK },
-    { label: "Backlog",   value: backlog,                bg: backlog > 0 ? RED : LIME, fg: backlog > 0 ? WHITE : INK },
+    { label: "Backlog",   value: backlog,                bg: backlog > 0 ? RED : LIME,   fg: backlog > 0 ? WHITE : INK },
   ];
 
   return (
@@ -83,20 +97,23 @@ export function TabDashboard({ data, semKeys }: Props) {
 
       {/* Charts */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(380px, 1fr))", gap: 24, marginBottom: 24 }}>
+
         {/* GPA Journey */}
         <div style={{ background: WHITE, border: `4px solid ${INK}`, boxShadow: SHADOW_LG, padding: 20 }}>
           <div style={{ fontFamily: mono, fontSize: "11px", fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.15em", marginBottom: 4 }}>GPA Journey</div>
           <div style={{ fontSize: "12px", color: MUTED, marginBottom: 16 }}>Semester-wise SGPA</div>
-          <div style={{ height: 220 }}>
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={journeyData} margin={{ top: 10, right: 20, bottom: 10, left: 0 }}>
-                <CartesianGrid stroke={INK} strokeDasharray="3 3" strokeWidth={1} />
-                <XAxis dataKey="semester" stroke={INK} tick={{ fontFamily: mono, fontSize: 10, fontWeight: 700 }} tickLine={{ stroke: INK, strokeWidth: 2 }} axisLine={{ stroke: INK, strokeWidth: 2 }} />
-                <YAxis domain={[0, 10]} stroke={INK} tick={{ fontFamily: mono, fontSize: 10, fontWeight: 700 }} tickLine={{ stroke: INK, strokeWidth: 2 }} axisLine={{ stroke: INK, strokeWidth: 2 }} />
-                <Tooltip content={<CustomTooltip />} />
-                <Line type="monotone" dataKey="sgpa" stroke={RED} strokeWidth={3} dot={{ fill: WHITE, stroke: RED, strokeWidth: 3, r: 5 }} activeDot={{ r: 7, fill: RED }} />
-              </LineChart>
-            </ResponsiveContainer>
+          <div style={{ height: 220, minHeight: 220 }}>
+            <ChartMount>
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={journeyData} margin={{ top: 10, right: 20, bottom: 10, left: 0 }}>
+                  <CartesianGrid stroke={INK} strokeDasharray="3 3" strokeWidth={1} />
+                  <XAxis dataKey="semester" stroke={INK} tick={{ fontFamily: mono, fontSize: 10, fontWeight: 700 }} tickLine={{ stroke: INK, strokeWidth: 2 }} axisLine={{ stroke: INK, strokeWidth: 2 }} />
+                  <YAxis domain={[0, 10]} stroke={INK} tick={{ fontFamily: mono, fontSize: 10, fontWeight: 700 }} tickLine={{ stroke: INK, strokeWidth: 2 }} axisLine={{ stroke: INK, strokeWidth: 2 }} />
+                  <Tooltip content={<CustomTooltip />} />
+                  <Line type="monotone" dataKey="sgpa" stroke={RED} strokeWidth={3} dot={{ fill: WHITE, stroke: RED, strokeWidth: 3, r: 5 }} activeDot={{ r: 7, fill: RED }} />
+                </LineChart>
+              </ResponsiveContainer>
+            </ChartMount>
           </div>
         </div>
 
@@ -105,14 +122,16 @@ export function TabDashboard({ data, semKeys }: Props) {
           <div style={{ fontFamily: mono, fontSize: "11px", fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.15em", marginBottom: 16 }}>Grade Spectrum</div>
           <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
             <div style={{ flex: "0 0 180px", position: "relative" }}>
-              <ResponsiveContainer width="100%" height={180}>
-                <PieChart>
-                  <Pie data={gradeData} cx="50%" cy="50%" innerRadius={45} outerRadius={72} paddingAngle={2} dataKey="value" stroke={INK} strokeWidth={2}>
-                    {gradeData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
-                  </Pie>
-                  <Tooltip />
-                </PieChart>
-              </ResponsiveContainer>
+              <ChartMount>
+                <ResponsiveContainer width="100%" height={180}>
+                  <PieChart>
+                    <Pie data={gradeData} cx="50%" cy="50%" innerRadius={45} outerRadius={72} paddingAngle={2} dataKey="value" stroke={INK} strokeWidth={2}>
+                      {gradeData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
+                    </Pie>
+                    <Tooltip />
+                  </PieChart>
+                </ResponsiveContainer>
+              </ChartMount>
               <div style={{ textAlign: "center", fontFamily: mono, fontSize: "12px", fontWeight: 800, position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%)", pointerEvents: "none" }}>
                 <div style={{ fontSize: 22 }}>{gradedSubjects.length}</div>
                 <div style={{ fontSize: 9, color: MUTED, textTransform: "uppercase" }}>Subjects</div>
@@ -128,8 +147,10 @@ export function TabDashboard({ data, semKeys }: Props) {
             </div>
           </div>
         </div>
+
       </div>
-      {/* Results table — mirrored from Results tab */}
+
+      {/* Results table */}
       <div style={{ marginTop: 8 }}>
         <TabResults data={data} semKeys={semKeys} />
       </div>

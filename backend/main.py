@@ -121,6 +121,10 @@ def result_fetch(request: SessionRequest):
         logger.warning("Fetch requested for missing or expired session %s", request.session_id)
         raise HTTPException(status_code=404, detail="Session not found or expired. Please start again.")
 
+    if driver.get("status") != "logged_in":
+        logger.warning("Fetch requested for session %s with invalid status %s", request.session_id, driver.get("status"))
+        raise HTTPException(status_code=400, detail="Session is not logged in. Complete login first.")
+
     return _unwrap_response(scrape_results(driver))
 
 

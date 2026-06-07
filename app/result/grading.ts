@@ -41,15 +41,7 @@ export function calcSGPA(subjects: Subject[]): number {
   return creds > 0 ? Math.round((pts / creds) * 100) / 100 : 0;
 }
 
-// ── Division per Ordinance 11, Clause 13 ─────────────────────────────────────
-// 6.50+       → First Division
-// 5.00 – 6.49 → Second Division
-// 4.00 – 4.99 → Third Division
-// < 4.00      → Fail
-//
-// NOTE: "Exemplary Performance" (CGPA 10) requires every course passed on the
-// first attempt with no academic break — this cannot be determined from marks
-// alone, so it is intentionally not shown here.
+
 export function getDivision(cgpa: number) {
   if (cgpa >= 6.5) return { label: "First Division",  color: LIME };
   if (cgpa >= 5.0) return { label: "Second Division", color: YELLOW };

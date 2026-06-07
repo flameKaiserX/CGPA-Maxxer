@@ -1,4 +1,4 @@
-# Backend production image for FastAPI + Selenium + Tesseract
+# Backend production image for FastAPI + HTTP scraping + Tesseract
 FROM python:3.14-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -6,7 +6,6 @@ ENV PYTHONUNBUFFERED=1
 ENV PIP_NO_CACHE_DIR=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    chromium \
     tesseract-ocr \
     libnss3 \
     libx11-xcb1 \
